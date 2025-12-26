@@ -1,2 +1,2 @@
 #!/bin/bash
-sudo nmap www.holbertonschool.com
+sudo nmap "$1"
