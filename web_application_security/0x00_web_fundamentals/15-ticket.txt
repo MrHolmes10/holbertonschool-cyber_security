@@ -1,11 +1,11 @@
 GET /ticket?id=1 HTTP/1.1
-Host: 10.42.193.240
+Host: 10.42.121.220
 Cache-Control: max-age=0
 Accept-Language: tr-TR,tr;q=0.9
 Upgrade-Insecure-Requests: 1
 User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36
 Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
-Referer: http://10.42.193.240/support
+Referer: http://10.42.121.220/support
 Accept-Encoding: gzip, deflate, br
-Cookie: session=.eJxFyksKgCAURuG9_GMJmzoqWkIrULyR4AuvUhDtPaGBw_NxHqw2uMhQh_ZMAlvjmgKVIXvLOZXaoZbWm4J2Hgr8-3KRkbeU02lqhICzULNAYypRBxoj3g8vsSW4.aWqLHQ.HGjHVj-lHRpGS5cJwvSK-EJ_oSQ
+Cookie: session=.eJxFyksKgCAURuG9_GMJmzoqWkIrULyR4AuvUhDtPaGBw_NxHqw2uMhQh_ZMAlvjmgKVIXvLOZXaoZbWm4J2Hgr8-3KRkbeU02lqhICzULNAYypRBxoj3g8vsSW4.aWrwFg.vQoysoQXeITZWAaA22H847ytd-U
 Connection: keep-alive
